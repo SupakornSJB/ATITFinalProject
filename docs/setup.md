@@ -13,7 +13,7 @@ committed to git** — each repo only contains example/placeholder values.
 
 | Value | Used by | Where it goes | Committed? |
 |---|---|---|---|
-| Root CA (`ca.crt` / `ca.key`) | Everything | `firmware/certs/` | `ca.crt` yes · `ca.key` **never** |
+| Root CA (`ca.crt` / `ca.key`) | Everything | `firmware/certs/` No — `ca.key` especially **never** |
 | Broker cert (CN = broker host) | Mosquitto | Mosquitto `certs/` folder | No |
 | Device certs (`esp32-01`, …) | ESP32 firmware | ESP32 filesystem (flashed) | No |
 | Relay cert (`gameserver`) | Relay server → MQTT and → Unity | `server/GameServer/Certs/` | No |
@@ -77,7 +77,8 @@ bash scripts/gen_device_cert.sh 192.168.1.50
 ```
 
 Each call writes `certs/<name>/device.crt` and `certs/<name>/device.key`.
-Every `*.key` file is git-ignored — keep it that way.
+Everything under `certs/` is git-ignored, including `ca.crt` — each deployment
+creates its own CA, so a committed one would be useless to anyone else.
 
 ---
 
@@ -222,7 +223,7 @@ cp atit_micropython/certs/unity-server/device.crt   ATITProject/Assets/Certs/dev
 cp atit_micropython/certs/unity-server/device.key   ATITProject/Assets/Certs/device.key
 ```
 
-`Assets/Certs/.gitignore` keeps everything except `ca.crt` out of git.
+`Assets/Certs/.gitignore` keeps all of these out of git.
 
 **5.2 Build and run:** File → Build Settings → Dedicated Server → Build, then:
 
