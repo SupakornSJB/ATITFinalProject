@@ -35,14 +35,22 @@ ESP32 (esp32-xx cert) ──MQTT/TLS :8883──▶ Mosquitto (broker cert) ◀�
 
 ### Repository layout used below
 
-Clone the component repos side by side:
+Clone this repository with its submodules — the components end up side by side, and every
+command below runs from the `ATITFinalProject/` root unless it says `cd`:
+
+```bash
+git clone --recurse-submodules https://github.com/SupakornSJB/ATITFinalProject
+```
 
 ```
-CodeRepo/
+ATITFinalProject/
 ├── atit_micropython/   # firmware   — github.com/SupakornSJB/atit_micropython
 ├── ATITInfraNode/      # relay      — github.com/SupakornSJB/ATITInfraNode
-└── ATITProject/        # Unity      — github.com/SupakornSJB/ATITProject
+├── ATITProject/        # Unity      — github.com/SupakornSJB/ATITProject
+└── atit-dashboard/     # dashboard  — github.com/SupakornSJB/atit-dashboard
 ```
+
+Cloning the four repos separately into one folder works the same way.
 
 Scripts are bash; on Windows run them from **Git Bash** (they already set
 `MSYS_NO_PATHCONV=1` so OpenSSL paths work there). Requires `openssl`, Python 3,
@@ -164,7 +172,7 @@ mpremote connect COM3 repl        # watch for "[MQTT] Connected"
 
 ## 4. Relay server (`ATITInfraNode/GameServer`)
 
-**4.1 Copy the certificates:**
+**4.1 Copy the certificates** (from the `ATITFinalProject/` root):
 
 ```bash
 cp atit_micropython/certs/ca.crt                  ATITInfraNode/GameServer/Certs/ca.crt
@@ -225,7 +233,7 @@ Log in to the dashboard as `admin` with that password. `dashboard.db` is git-ign
 
 ## 5. Unity dedicated server (`ATITProject`)
 
-**5.1 Copy the certificates:**
+**5.1 Copy the certificates** (from the `ATITFinalProject/` root):
 
 ```bash
 cp atit_micropython/certs/ca.crt                    ATITProject/Assets/Certs/ca.crt

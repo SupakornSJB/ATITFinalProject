@@ -20,14 +20,15 @@ are each split into a reusable, game-agnostic library and a thin game-specific l
 ## Repositories
 
 This umbrella repository holds the architecture overview, the protocol specification and the
-[setup guide](docs/setup.md). The components live in their own repositories:
+[setup guide](docs/setup.md). Each component lives in its own repository and is included here
+as a **git submodule**, pinned to a set of versions that work together:
 
 | Repository | Component | Stack |
 |---|---|---|
 | [atit_micropython](https://github.com/SupakornSJB/atit_micropython) | ESP32 controller firmware + device certificate scripts | MicroPython |
 | [ATITInfraNode](https://github.com/SupakornSJB/ATITInfraNode) | Relay server: MQTT → gRPC, device registry, intrusion detection, dashboard API | C# / ASP.NET Core 8 |
 | [ATITProject](https://github.com/SupakornSJB/ATITProject) | Unity dedicated server + spectator client | C# / Unity 6 LTS |
-| atit-dashboard *(not yet published)* | Admin security dashboard | React + TypeScript |
+| [atit-dashboard](https://github.com/SupakornSJB/atit-dashboard) | Admin security dashboard: live alerts, quarantine, round control | React + TypeScript |
 
 ---
 
@@ -354,10 +355,18 @@ Prerequisites: ESP32 boards with MicroPython, Mosquitto, the .NET 8 SDK, Unity 6
 Python 3 with `mpremote`, OpenSSL (Git Bash on Windows), and Node.js for the dashboard.
 
 ```bash
-git clone https://github.com/SupakornSJB/atit_micropython
-git clone https://github.com/SupakornSJB/ATITInfraNode
-git clone https://github.com/SupakornSJB/ATITProject
+# Everything, at the pinned versions
+git clone --recurse-submodules https://github.com/SupakornSJB/ATITFinalProject
+
+# Already cloned without submodules?
+git submodule update --init
+
+# Move every component to its latest main
+git submodule update --remote
 ```
+
+GitHub's *Download ZIP* does not include submodule contents — clone with
+`--recurse-submodules` instead.
 
 ---
 

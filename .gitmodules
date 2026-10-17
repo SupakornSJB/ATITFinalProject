@@ -1,0 +1,16 @@
+[submodule "atit_micropython"]
+	path = atit_micropython
+	url = https://github.com/SupakornSJB/atit_micropython.git
+	branch = main
+[submodule "ATITInfraNode"]
+	path = ATITInfraNode
+	url = https://github.com/SupakornSJB/ATITInfraNode.git
+	branch = main
+[submodule "ATITProject"]
+	path = ATITProject
+	url = https://github.com/SupakornSJB/ATITProject.git
+	branch = main
+[submodule "atit-dashboard"]
+	path = atit-dashboard
+	url = https://github.com/SupakornSJB/atit-dashboard.git
+	branch = main
