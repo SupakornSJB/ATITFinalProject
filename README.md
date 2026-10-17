@@ -112,14 +112,14 @@ Phase 6 hardened every hop. Each component has its own certificate signed by a p
 |---|---|
 | ESP32 → broker | Mutual TLS; the certificate CN is the device identity, and the ACL scopes each device to its own topics |
 | Broker → relay | Mutual TLS with the relay's own certificate (`CN=gameserver`, read-only ACL) |
-| Relay → Unity | gRPC over mutual TLS; Unity requires and verifies the relay's client certificate |
+| Relay → Unity | gRPC over mutual TLS; Unity requires a client certificate signed by the project CA |
 | Dashboard → relay | JWT login (bcrypt-hashed users in SQLite); the security API and SignalR hub require the token |
 
 On top of transport security the relay runs a rule-based **intrusion detector**: devices that
 flood events or fail authentication are **quarantined automatically**, unknown slots and
 devices raise alerts, and an operator can quarantine or release a device from the dashboard.
-`rogue_device.py` (relay repo) reproduces the three demo attacks: *no certificate*, *flood*
-and *spoofed slot*.
+`rogue_device.py` (relay repo) is a demo attacker for *no certificate*, *flood* and *spoofed
+slot* scenarios; it has not been re-tested since Phase 6 (see the relay's known limitations).
 
 Secrets never live in the repositories — see [docs/setup.md](docs/setup.md).
 
@@ -227,7 +227,7 @@ are resolved by the relay from its registry. The relay subscribes to `game/devic
 | `event` | string | `pressed` / `released` for buttons, `change` for everything else |
 | `value` | float | Buttons `1.0`/`0.0`; knobs normalized `0.0–1.0`; DHT11 °C; ultrasonic cm |
 | `auxiliary` | object | Optional extra readings from multi-value sensors (DHT11 humidity) |
-| `timestamp` | int64 | Seconds since epoch (NTP-synced on WiFi connect) |
+| `timestamp` | int64 | Board clock in seconds (`utime.time()`), NTP-synced on WiFi connect |
 | `sequenceNumber` | int64 | Per-device counter; resets on reboot |
 
 ### Device registry (relay config)
@@ -310,7 +310,8 @@ A new game reuses the three libraries and only writes its own game layer.
 ### The environment is an input
 
 Sensors aren't attached to players; they map to environment signals. Humidity changes the
-enemy spawn interval (3 s → 0.6 s), and distance zones 1–4 set the game speed (0.5×–1.5×).
+enemy spawn interval (3 s down to a 1 s minimum), and distance zones 1–4 set the game speed
+(0.5×–1.5×).
 The relay applies hysteresis to the distance reading so jitter at a zone boundary doesn't
 flicker the game speed.
 
@@ -381,10 +382,15 @@ GitHub's *Download ZIP* does not include submodule contents — clone with
 
 The full pipeline — ESP32 controllers through to the Unity clients — works end to end.
 
-Known limitations are listed in each component's README; the main ones are that the admin
-round-control API accepts only an API key (so the dashboard's round buttons need it unset) and
-that the relay does not yet verify the Unity server's certificate. The Unity server also
-falls back to plain gRPC (with a warning) if its certificate files are missing.
+Known limitations are listed in each component's README. The main ones:
+
+- The admin round-control API accepts only an API key, so the dashboard's round buttons need it
+  unset.
+- The relay skips the Unity server-certificate check for `localhost` endpoints; for remote
+  hosts the project CA must be installed as a trusted root.
+- Unity accepts any client certificate signed by the project CA — a certificate copied from a
+  device could call it directly and bypass the relay's intrusion detection.
+- Unity falls back to plain gRPC (with a warning) if its certificate files are missing.
 
 ---
 

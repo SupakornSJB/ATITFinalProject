@@ -13,12 +13,12 @@ committed to git** — each repo only contains example/placeholder values.
 
 | Value | Used by | Where it goes | Committed? |
 |---|---|---|---|
-| Root CA (`ca.crt` / `ca.key`) | Everything | `firmware/certs/` | No — `ca.key` especially **never** |
+| Root CA (`ca.crt` / `ca.key`) | Everything | `atit_micropython/certs/` | No — `ca.key` especially **never** |
 | Broker cert (CN = broker host) | Mosquitto | Mosquitto `certs/` folder | No |
 | Device certs (`esp32-01`, …) | ESP32 firmware | ESP32 filesystem (flashed) | No |
-| Relay cert (`gameserver`) | Relay server → MQTT and → Unity | `server/GameServer/Certs/` | No |
-| Unity server cert (`unity-server`) | Unity gRPC server | `unity/Assets/Certs/` | No |
-| WiFi SSID / password, broker host | ESP32 firmware | `firmware/config.py` (copied from example) | No |
+| Relay cert (`gameserver`) | Relay server → MQTT and → Unity | `ATITInfraNode/GameServer/Certs/` | No |
+| Unity server cert (`unity-server`) | Unity gRPC server | `ATITProject/Assets/Certs/` | No |
+| WiFi SSID / password, broker host | ESP32 firmware | `atit_micropython/game/config.py` (copied from an example) | No |
 | `Dashboard:JwtSecret` | Relay server dashboard login | `dotnet user-secrets` / env var | No |
 | `IoTGame:AdminApiKey` | Relay server admin endpoints | `dotnet user-secrets` / env var | No |
 | Dashboard admin password | Dashboard login | SQLite `dashboard.db` via `seed_admin.py` | No |
@@ -189,7 +189,7 @@ relative to the `GameServer/` project folder, so this works from any directory.
 |---|---|
 | `Mqtt:Host` / `Mqtt:Port` | Broker host and its TLS listener port |
 | `Mqtt:UseTls` | `true` |
-| `Unity:GrpcEndpoint` | `https://<unity-server-host>:9090` |
+| `Unity:GrpcEndpoint` | `https://localhost:9090` — run Unity on the same machine as the relay (recommended; the relay skips the server-certificate check for `localhost`). Any other host is checked against the OS trust store and host name: install `ca.crt` as a trusted root on the relay machine, issue Unity's cert for that DNS name (`gen_device_cert.sh <host>`, which writes `certs/<host>/` — copy from there instead of `certs/unity-server/` in 5.1), and note the script sets only the CN, so an IP-address endpoint needs a certificate with a subjectAltName |
 | `DeviceRegistry` | Maps each `DEVICE_ID` and its `slotId`s to players and actions |
 
 **4.3 Set the secrets** — these must never go in `appsettings.json`:
@@ -243,19 +243,24 @@ cp atit_micropython/certs/unity-server/device.key   ATITProject/Assets/Certs/dev
 
 `Assets/Certs/.gitignore` keeps all of these out of git.
 
-**5.2 Build and run:** File → Build Settings → Dedicated Server → Build, then:
+**5.2 Build and run:** File → Build Settings → Dedicated Server → Build (or the CLI build in the
+Unity README, which writes `Builds/Server/ATITProject.exe` and copies the certs next to it), then:
 
-```bash
-./ATITProject.x86_64 -batchmode -nographics \
-  -grpcPort 9090 -gamePort 7777 \
-  -grpcCert Assets/Certs/device.crt \
-  -grpcKey  Assets/Certs/device.key \
-  -caCert   Assets/Certs/ca.crt \
+```powershell
+cd ATITProject
+Builds/Server/ATITProject.exe -batchmode -nographics `
+  -grpcPort 9090 -gamePort 7777 `
+  -grpcCert Assets/Certs/device.crt `
+  -grpcKey  Assets/Certs/device.key `
+  -caCert   Assets/Certs/ca.crt `
   -logFile  server.log
 ```
 
-The cert arguments default to those `Assets/Certs/` paths when omitted. Game clients
-connect with `-serverAddress <host> -gamePort 7777`.
+The cert arguments default to those `Assets/Certs/` paths when omitted. Relative paths
+resolve against the directory you start the server from — here the project root, so it uses
+the files from 5.1. If they aren't found the server logs `starting INSECURE` and runs without
+TLS, so check for `Starting with mTLS` in the log. Game clients connect with
+`-serverAddress <host> -gamePort 7777`.
 
 ---
 
@@ -276,7 +281,7 @@ To serve the dashboard from the relay itself (one server, no Node at demo time),
 the relay's `wwwroot` — the relay serves it at `https://<relay-host>:5000/dashboard/`:
 
 ```bash
-npm run build -- --outDir ../ATITInfraNode/GameServer/wwwroot/dashboard --emptyOutDir
+npm run deploy     # = npm run build -- --outDir ../ATITInfraNode/GameServer/wwwroot/dashboard --emptyOutDir
 ```
 
 ---
@@ -303,5 +308,5 @@ does not remove it from git history.
 | ESP32 never connects; broker log shows TLS errors | Cert paths missing in `config.py`, `MQTT_PORT` isn't the TLS listener's port, or `MQTT_HOST` doesn't match the broker cert CN |
 | ESP32 can't see the network | 5 GHz SSID — ESP32 only supports 2.4 GHz |
 | ESP32 connects but relay receives nothing | Mosquitto ACL: device cert CN ≠ topic `deviceId`, or relay cert CN ≠ `gameserver` |
-| Relay can't reach Unity / TLS handshake failure on 9090 | Unity cert not signed by the same `ca.crt`, or wrong `-grpcCert`/`-caCert` paths |
+| Relay can't reach Unity / TLS handshake failure on 9090 | Relay cert not signed by the same `ca.crt` Unity loads; for a non-localhost endpoint, `ca.crt` not trusted by the OS or the Unity cert's name doesn't match the host; wrong `-grpcCert`/`-caCert` paths |
 | `FileNotFoundException` for a cert | File not copied in step 4.1 / 5.1 |
