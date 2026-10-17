@@ -113,8 +113,9 @@ user gameserver
 topic read game/devices/#
 ```
 
-> **Use port 8883.** The firmware only enables TLS when `MQTT_PORT == 8883`
-> (`iotgame/mqtt.py`). A TLS listener on 1883 will reject the ESP32s.
+> **Port:** 8883 is the conventional port for MQTT over TLS, but any port works as long as
+> every client uses the listener's port. The firmware switches TLS on whenever cert paths are
+> set in `config.py` (`iotgame/mqtt.py`), and the relay whenever `Mqtt:UseTls` is `true`.
 
 Restart Mosquitto after changing the config.
 
@@ -125,7 +126,7 @@ Restart Mosquitto after changing the config.
 **3.1 Create your config from the example — never edit the example itself:**
 
 ```bash
-cp config.example.py game/config.py          # one file per device you flash
+cp game/config.example.py game/config.py     # one file per device you flash
 # or, for the 4-input player-2 layout:
 cp game/config_device2.example.py game/config.py
 ```
@@ -137,10 +138,10 @@ Fill in:
 | `WIFI_SSID` / `WIFI_PASSWORD` | Your 2.4 GHz network (ESP32 cannot join 5 GHz) |
 | `DEVICE_ID` | Same name you used in `gen_device_cert.sh`, e.g. `esp32-01` |
 | `MQTT_HOST` | Broker host/IP — must match the broker cert CN from step 1 |
-| `MQTT_PORT` | `8883` |
+| `MQTT_PORT` | The broker's TLS listener port (`8883` above) |
 | `MQTT_USER` / `MQTT_PASSWORD` | `None` (identity comes from the cert) |
 | `CA_CERT_PATH` / `CERT_PATH` / `KEY_PATH` | Leave as `ca.crt` / `device.crt` / `device.key` |
-| `INPUTS` | Your wiring — see the examples in `config.example.py` |
+| `INPUTS` | Your wiring — see the examples in `game/config.example.py` |
 
 `config.py` and `config_*.py` are git-ignored; only `*.example.py` files are committed.
 
@@ -150,8 +151,14 @@ Fill in:
 python scripts/provision_device.py esp32-01 --port COM3
 ```
 
-**3.3 Upload the firmware** — see the firmware README for the `mpremote` commands,
-then watch the serial log for `[MQTT] Connected`.
+**3.3 Upload the firmware:**
+
+```bash
+mpremote connect COM3 cp -r iotgame :
+mpremote connect COM3 cp game/config.py :config.py
+mpremote connect COM3 cp game/main.py :main.py
+mpremote connect COM3 repl        # watch for "[MQTT] Connected"
+```
 
 ---
 
@@ -172,7 +179,7 @@ relative to the `GameServer/` project folder, so this works from any directory.
 
 | Key | Value |
 |---|---|
-| `Mqtt:Host` / `Mqtt:Port` | Broker host and `8883` |
+| `Mqtt:Host` / `Mqtt:Port` | Broker host and its TLS listener port |
 | `Mqtt:UseTls` | `true` |
 | `Unity:GrpcEndpoint` | `https://<unity-server-host>:9090` |
 | `DeviceRegistry` | Maps each `DEVICE_ID` and its `slotId`s to players and actions |
@@ -185,8 +192,9 @@ cd ATITInfraNode/GameServer
 # Required: signs dashboard login tokens. At least 32 bytes — the server refuses to start otherwise.
 dotnet user-secrets set "Dashboard:JwtSecret" "$(openssl rand -base64 48)"
 
-# Strongly recommended: protects the admin endpoints (callers send it as the X-IoTGame-Key header).
-# If left empty, the admin endpoints accept every request.
+# Optional: protects /api/admin/* and /api/sessions/* (callers send it as the X-IoTGame-Key header).
+# If left empty, those endpoints accept every request. Known limitation: the dashboard's
+# Start/End round buttons send only the login JWT, so they stop working once this is set.
 dotnet user-secrets set "IoTGame:AdminApiKey" "$(openssl rand -hex 32)"
 
 # Only if your broker uses username/password instead of client certs:
@@ -243,7 +251,29 @@ connect with `-serverAddress <host> -gamePort 7777`.
 
 ---
 
-## 6. Never commit
+## 6. Admin dashboard (`atit-dashboard`)
+
+With the relay running (step 4):
+
+```bash
+cd atit-dashboard
+npm install
+npm run dev          # http://localhost:5173/dashboard/
+```
+
+Vite proxies `/api` and `/hubs` to the relay at `https://localhost:5000` (see `vite.config.ts`),
+so no extra configuration is needed. Log in as `admin` with the password from step 4.4.
+
+To serve the dashboard from the relay itself (one server, no Node at demo time), build it into
+the relay's `wwwroot` — the relay serves it at `https://<relay-host>:5000/dashboard/`:
+
+```bash
+npm run build -- --outDir ../ATITInfraNode/GameServer/wwwroot/dashboard --emptyOutDir
+```
+
+---
+
+## 7. Never commit
 
 Before every commit, `git status` should show none of these:
 
@@ -262,7 +292,7 @@ does not remove it from git history.
 | Symptom | Cause / fix |
 |---|---|
 | `Dashboard:JwtSecret is missing or shorter than 32 bytes` on start | Step 4.3 not done, or not running in Development (user-secrets not loaded) — set `Dashboard__JwtSecret` instead |
-| ESP32 never connects; broker log shows TLS errors | `MQTT_PORT` isn't `8883`, or `MQTT_HOST` doesn't match the broker cert CN |
+| ESP32 never connects; broker log shows TLS errors | Cert paths missing in `config.py`, `MQTT_PORT` isn't the TLS listener's port, or `MQTT_HOST` doesn't match the broker cert CN |
 | ESP32 can't see the network | 5 GHz SSID — ESP32 only supports 2.4 GHz |
 | ESP32 connects but relay receives nothing | Mosquitto ACL: device cert CN ≠ topic `deviceId`, or relay cert CN ≠ `gameserver` |
 | Relay can't reach Unity / TLS handshake failure on 9090 | Unity cert not signed by the same `ca.crt`, or wrong `-grpcCert`/`-caCert` paths |

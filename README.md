@@ -2,46 +2,44 @@
 
 > **Turn anything physical into a game controller.**
 
----
+An IoT multiplayer game where the controllers are **ESP32 microcontrollers** — thumbsticks,
+knobs and buttons wired to a board — and the room itself is part of the game: a humidity
+sensor changes how fast enemies spawn, and a distance sensor changes the game speed.
 
-## What Is This?
+The current game is a **two-player co-op space shooter** built in Unity. Every input travels
+over a secured pipeline — **MQTT → relay server → gRPC → Unity dedicated server** — with
+**mutual TLS on every network hop**, server-side intrusion detection, and an admin dashboard
+that shows attacks as they happen.
 
-ATITFinalProject is a **proof-of-concept IoT multiplayer gaming system**. Instead of
-using a keyboard or gamepad, players control a game by pressing a **physical button
-wired to a microcontroller**. The button press travels through a cloud pipeline and
-moves a character on screen in real time, for every player connected to the session.
-
-The current POC is a **multiplayer 3D Flappy Bird** — each player has a physical ESP32
-button. Press it and your bird flaps. Every connected client sees every bird, in sync.
-
-This is a **final project** exploring the intersection of IoT, cloud networking, and
-real-time multiplayer game development. The goal is not just to make a game — it is
-to design and implement a clean, extensible architecture that could support many
-different games and many different types of physical input devices.
+This is a final project exploring IoT, real-time multiplayer networking and security. The goal
+was not just a game but a clean, extensible architecture: the firmware, relay and Unity layers
+are each split into a reusable, game-agnostic library and a thin game-specific layer.
 
 ---
 
 ## Repositories
 
-This umbrella repository contains architecture documentation and the protocol
-specification. The three component repositories are:
+This umbrella repository holds the architecture overview, the protocol specification and the
+[setup guide](docs/setup.md). The components live in their own repositories:
 
-| Repository | Description | Stack |
+| Repository | Component | Stack |
 |---|---|---|
-| [ATITFinalProject-firmware](https://github.com/SupakornSJB/atit_micropython) | MicroPython firmware for ESP32 controllers | MicroPython |
-| [ATITFinalProject-server](https://github.com/SupakornSJB/ATITInfraNode) | ASP.NET Core relay server — MQTT to gRPC | C# / .NET 8 |
-| [ATITFinalProject-unity](https://github.com/SupakornSJB/ATITProject) | Unity dedicated server + game client | C# / Unity 6 LTS |
+| [atit_micropython](https://github.com/SupakornSJB/atit_micropython) | ESP32 controller firmware + device certificate scripts | MicroPython |
+| [ATITInfraNode](https://github.com/SupakornSJB/ATITInfraNode) | Relay server: MQTT → gRPC, device registry, intrusion detection, dashboard API | C# / ASP.NET Core 8 |
+| [ATITProject](https://github.com/SupakornSJB/ATITProject) | Unity dedicated server + spectator client | C# / Unity 6 LTS |
+| atit-dashboard *(not yet published)* | Admin security dashboard | React + TypeScript |
 
 ---
 
 ## Table of Contents
 
 - [System Architecture](#system-architecture)
+- [Security](#security)
 - [Why This Architecture?](#why-this-architecture)
-- [Technology Choices Explained](#technology-choices-explained)
+- [Technology Choices](#technology-choices)
 - [Protocol Specification](#protocol-specification)
 - [Key Design Decisions](#key-design-decisions)
-- [Protocol Version History](#protocol-version-history)
+- [Project Phases](#project-phases)
 - [Getting Started](#getting-started)
 - [Project Status](#project-status)
 
@@ -49,57 +47,80 @@ specification. The three component repositories are:
 
 ## System Architecture
 
-The system has four layers. Each layer has a single, well-defined responsibility and
-communicates with adjacent layers through a documented protocol.
+Each layer has one responsibility and talks to its neighbours through a documented protocol.
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
-║  PHYSICAL LAYER                                                  ║
+║  PHYSICAL LAYER — ESP32 controllers (MicroPython)                ║
 ║                                                                  ║
-║   ESP32 #1            ESP32 #2            ESP32 #N               ║
-║   [ btn1 ][ knob1 ]   [ btn1 ][ btn2 ]   [ btn1 ]               ║
+║   ESP32 #1                          ESP32 #2                     ║
+║   thumbstick · round buttons        knob · up / down / fire      ║
+║   DHT11 · HC-SR04 ultrasonic                                     ║
 ║                                                                  ║
-║   MicroPython firmware — reads GPIO/ADC, publishes MQTT events   ║
+║   Reads GPIO / ADC / sensors, publishes one event per change     ║
 ╚══════════════════╤═══════════════════════════════════════════════╝
-                   │  MQTT over TLS (port 8883)
+                   │  MQTT over mutual TLS — each board has its own client cert
                    │  topic: game/devices/{deviceId}/slot/{slotId}
-                   │  broker: HiveMQ Cloud
                    ▼
 ╔══════════════════════════════════════════════════════════════════╗
-║  RELAY LAYER                                                     ║
-║                                                                  ║
-║   ASP.NET Core Server                                            ║
-║   • Subscribes to all device slot topics (wildcard)              ║
-║   • Resolves (deviceId, slotId) → (playerId, inputName)          ║
-║   • Authenticates devices, validates sessions                    ║
-║   • Normalizes analog values (ADC range → 0.0–1.0)               ║
-║   • Buffers and rate-limits high-frequency sensor input          ║
-║   • Forwards clean, resolved events to Unity over gRPC           ║
+║  BROKER — Mosquitto (self-hosted)                                ║
+║   • require_certificate: no CA-signed cert, no connection        ║
+║   • cert CN = MQTT username; ACL: a device may only publish      ║
+║     under game/devices/<its CN>/#                                ║
 ╚══════════════════╤═══════════════════════════════════════════════╝
-                   │  gRPC (HTTP/2 + Protobuf)
-                   │  SendInputBatch(events[])
+                   │  MQTT over mutual TLS (relay cert, read-all ACL)
                    ▼
 ╔══════════════════════════════════════════════════════════════════╗
-║  GAME SERVER LAYER                                               ║
-║                                                                  ║
-║   Unity Dedicated Server (headless, no graphics)                 ║
-║   • Embedded Kestrel gRPC server (background thread)             ║
-║   • Thread-safe ConcurrentQueue bridges gRPC → main thread       ║
-║   • Authoritative game state via Netcode for GameObjects (NGO)   ║
-║   • Replicates game state to all clients                         ║
-╚══════════════════╤═══════════════════════════════════════════════╝
-                   │  Netcode for GameObjects (NGO)
-                   │  Unity Transport (UTP), port 7777
+║  RELAY LAYER — ASP.NET Core 8 (IoTGame.Core + GameServer)        ║
+║   • Quarantine check, rate limiting, unknown-slot detection      ║
+║   • DeviceRegistry: (deviceId, slotId) → player + action,        ║
+║     or → environment signal (spawn_rate, ultrasonic_zone)        ║
+║   • Ultrasonic distance → zones 1–4 with hysteresis              ║
+║   • Intrusion alerts + device state → SignalR → dashboard        ║
+╚══════════════════╤══════════════════════════════╤════════════════╝
+                   │  gRPC over mutual TLS         │  REST + SignalR (JWT)
+                   │  SendInputBatch ·             ▼
+                   │  SendEnvironmentEvent ·    ┌──────────────────────┐
+                   │  SendAdminCommand          │  ADMIN DASHBOARD      │
+                   ▼                            │  React — live alerts, │
+╔══════════════════════════════════════════╗   │  quarantine, rounds   │
+║  GAME SERVER — Unity dedicated server    ║   └──────────────────────┘
+║   • Grpc.Core server, client cert        ║
+║     required and verified                ║
+║   • ConcurrentQueue bridges gRPC threads ║
+║     → Unity main thread                  ║
+║   • Server-authoritative game state      ║
+╚══════════════════╤═══════════════════════╝
+                   │  Netcode for GameObjects / Unity Transport, port 7777
                    ▼
-╔══════════════════════════════════════════════════════════════════╗
-║  CLIENT LAYER                                                    ║
-║                                                                  ║
-║   Unity Game Clients (one per player)                            ║
-║   • Renders the game in real time                                ║
-║   • Receives replicated state from the dedicated server          ║
-║   • No direct connection to IoT devices or relay server          ║
-╚══════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════╗
+║  CLIENTS — Unity spectator clients       ║
+║   • Render the replicated game           ║
+║   • No connection to devices or relay    ║
+╚══════════════════════════════════════════╝
 ```
+
+---
+
+## Security
+
+Phase 6 hardened every hop. Each component has its own certificate signed by a project CA
+(`scripts/gen_ca.sh`, `scripts/gen_device_cert.sh`):
+
+| Hop | Protection |
+|---|---|
+| ESP32 → broker | Mutual TLS; the certificate CN is the device identity, and the ACL scopes each device to its own topics |
+| Broker → relay | Mutual TLS with the relay's own certificate (`CN=gameserver`, read-only ACL) |
+| Relay → Unity | gRPC over mutual TLS; Unity requires and verifies the relay's client certificate |
+| Dashboard → relay | JWT login (bcrypt-hashed users in SQLite); the security API and SignalR hub require the token |
+
+On top of transport security the relay runs a rule-based **intrusion detector**: devices that
+flood events or fail authentication are **quarantined automatically**, unknown slots and
+devices raise alerts, and an operator can quarantine or release a device from the dashboard.
+`rogue_device.py` (relay repo) reproduces the three demo attacks: *no certificate*, *flood*
+and *spoofed slot*.
+
+Secrets never live in the repositories — see [docs/setup.md](docs/setup.md).
 
 ---
 
@@ -110,89 +131,67 @@ understanding of *why* each architectural choice was made, not just *what* was b
 
 ### Why a relay server instead of ESP32 → Unity directly?
 
-The most natural question is: why not skip the ASP.NET server and have the ESP32
-publish MQTT events that Unity subscribes to directly?
+**Security boundary.** The Unity dedicated server is a private, trusted service. It should
+never be internet-facing, nor responsible for IoT security. Device identity is enforced at
+the broker by client certificates; the relay adds rate limiting, unknown-slot detection and
+quarantine, and only then forwards fully resolved events. Unity accepts gRPC only from a
+client presenting a certificate signed by the project CA.
 
-**Security boundary.** The Unity dedicated server is a private, trusted service. It
-should never be directly internet-facing, nor should it be responsible for
-authenticating IoT devices. The relay server is the only public-facing entry point —
-it handles device authentication, session validation, and player mapping before Unity
-sees a single event. Without it, Unity would need to become an IoT backend, which is
-the wrong responsibility for a game server.
+**Protocol translation.** MQTT is a pub/sub broker protocol designed for constrained devices.
+Unity's multiplayer stack (NGO/UTP) is a direct-connection transport. The relay is the
+impedance-matching layer between the IoT world and the game world.
 
-**Protocol translation.** MQTT is a pub/sub broker protocol designed for constrained
-IoT devices. Unity's multiplayer stack (NGO/UTP) is a direct-connection transport.
-These are fundamentally different network models. The relay server translates between
-them — it is the impedance matching layer between the IoT world and the game world.
+**Separation of concerns.** Which button belongs to which player, and what a knob or sensor
+means in the game, is infrastructure config, not game logic. In the relay it is a
+`DeviceRegistry` change — no firmware reflash, no Unity rebuild.
 
-**Separation of concerns.** Device configuration — which button belongs to which
-player, what action a knob represents — is infrastructure config, not game logic.
-Putting it in Unity would mean rebuilding and redeploying the game server whenever
-device assignments change. In the relay server it is a config file change with no
-rebuild required on either side.
+**Independent scaling.** The relay is stateless per event and can scale horizontally; the
+Unity server is stateful and scales by running more instances per game session.
 
-**Independent scaling.** The relay server is stateless and scales horizontally. The
-Unity dedicated server is stateful and scales by spinning up new instances per game
-session. Merging them means you cannot scale one without the other.
+### Why MQTT for ESP32 → server?
 
-### Why MQTT for ESP32 → Server?
+A persistent TCP connection means no connection setup per button press, which keeps physical
+input feeling immediate. MQTT is built for constrained devices: `umqtt.simple` ships with
+MicroPython, per-message overhead is a few bytes instead of full HTTP headers, and the broker
+gives fan-out, ACLs and certificate authentication for free. HTTP REST would have been simpler
+but adds a request per event.
 
-MQTT was chosen over HTTP REST for the IoT leg for several reasons. The persistent
-TCP connection means there is no handshake overhead per event — latency is consistently
-5–20ms compared to 50–200ms for a new HTTP connection on each button press. MQTT is
-also specifically designed for constrained devices: the client library (`umqtt.simple`)
-is built into MicroPython, the per-message header is ~2 bytes versus full HTTP headers,
-and delivery guarantees (QoS levels) are built-in without manual retry logic in firmware.
+### Why gRPC for relay → Unity?
 
-HTTP REST would have been simpler to implement but would have added perceptible latency
-to every button press, which fundamentally breaks the feel of a physical controller.
-
-### Why gRPC for Server → Unity?
-
-gRPC was chosen over WebSocket or raw TCP for the relay-to-Unity leg because of its
-strongly typed contract model. The `.proto` file is a machine-verified contract shared
-between the relay server (gRPC client) and Unity (gRPC server) — both generate C#
-stubs from the same file, so serialization mismatches are caught at compile time rather
-than at runtime. HTTP/2 multiplexing also allows multiple in-flight calls to share one
-connection, which is efficient for batched input events.
-
-The tradeoff is setup complexity: gRPC requires `protoc` for stub generation and
-careful IL2CPP stripping configuration for Unity dedicated server builds. This
-complexity is justified because the protocol boundary between the relay server and
-Unity is the highest-stakes interface in the system — it is where two completely
-different codebases must agree on a data format.
+The `.proto` file is a machine-checked contract shared by the relay (client) and Unity
+(server); both generate C# stubs from it, so serialization mismatches surface at compile time.
+HTTP/2 multiplexing lets batched input and environment events share one connection. The cost
+is setup complexity — stub generation and IL2CPP stripping exemptions for the Unity server
+build — which is justified because this is the interface where two separate codebases must
+agree on a data format.
 
 ### Why a dedicated server instead of a listen server?
 
-A dedicated server (headless Unity build, no rendering) was chosen over a listen server
-(one player also hosts) because the game session is driven by IoT device events, not
-by any player's client. There is no natural "host player" — the server is an
-independent process. A dedicated server can also be cloud-hosted and always available
-regardless of which players are connected, and NGO's server-authoritative model
-(where the server owns all game state) is a natural fit for input that arrives
-out-of-band via gRPC rather than from a connected client.
+The game is driven by IoT events, not by any player's client, so there is no natural host
+player. A headless dedicated server can run anywhere, stays up regardless of which clients are
+connected, and NGO's server-authoritative model fits input that arrives out-of-band over gRPC.
 
 ---
 
-## Technology Choices Explained
+## Technology Choices
 
 | Technology | Used for | Why chosen | Considered alternatives |
 |---|---|---|---|
-| **ESP32** | Physical controller hardware | WiFi built-in, MicroPython support, wide GPIO availability, low cost | Raspberry Pi Pico W (less RAM efficient), Arduino (no native WiFi) |
-| **MicroPython** | Firmware language | Python syntax; `umqtt.simple` and `ussl` built-in; fast iteration | C/C++ with ESP-IDF (more performant but significantly more complex) |
-| **MQTT** | ESP32 → broker transport | Designed for constrained IoT devices; persistent connection; low overhead per message | HTTP REST (higher latency per event), WebSocket (more complex on MicroPython) |
-| **HiveMQ Cloud** | MQTT broker | Free tier sufficient for POC; managed TLS; reliable uptime | Mosquitto self-hosted (more control, more ops overhead), EMQX Cloud |
-| **ASP.NET Core (.NET 8)** | Relay server | First-class gRPC support; MQTTnet library mature; C# across server and Unity | Node.js (weaker gRPC story), Go (less familiar) |
-| **gRPC (Protobuf)** | Server → Unity transport | Strongly typed shared contract; HTTP/2 multiplexing; code generation for both sides | WebSocket (no schema enforcement), raw TCP (no framing or typing), REST (latency) |
-| **Unity 6 LTS** | Game engine | NGO is a first-party Unity package; Dedicated Server build target built-in; URP included | Godot (weaker multiplayer tooling), Unreal (too heavy for a POC) |
-| **Netcode for GameObjects** | Unity multiplayer | First-party Unity package; server-authoritative model fits IoT-driven input well | Mirror (community-maintained), Fishnet (more features but more complexity for a POC) |
-| **Unity Transport (UTP)** | NGO transport layer | Default NGO transport; supports Unity Relay for NAT traversal if needed | LLAPI (deprecated), custom TCP socket |
+| **ESP32** | Controller hardware | WiFi built-in, MicroPython support, plenty of GPIO/ADC, low cost | Raspberry Pi Pico W, Arduino (no native WiFi) |
+| **MicroPython** | Firmware | Python syntax; `umqtt.simple` and TLS built-in; fast iteration | C/C++ with ESP-IDF (faster, much more complex) |
+| **MQTT** | ESP32 → broker | Designed for constrained devices; persistent connection; low per-message overhead | HTTP REST (request per event), WebSocket (heavier on MicroPython) |
+| **Mosquitto** (self-hosted) | MQTT broker | Client-certificate auth, cert CN as username and per-device ACL patterns — the basis of the device security model | HiveMQ Cloud (used in early phases; managed, simpler setup), EMQX |
+| **ASP.NET Core 8** | Relay server | First-class gRPC, mature MQTTnet library, SignalR, C# shared with Unity | Node.js (weaker gRPC story), Go |
+| **gRPC / Protobuf** | Relay → Unity | Typed shared contract, HTTP/2 multiplexing, code generation on both sides | WebSocket (no schema), raw TCP, REST |
+| **Unity 6 LTS** | Game engine | NGO is first-party; Dedicated Server build target; URP | Godot, Unreal (too heavy for a POC) |
+| **Netcode for GameObjects** | Multiplayer | First-party, server-authoritative model fits IoT-driven input | Mirror, Fish-Net |
+| **React + Vite** | Admin dashboard | Fast to build; `@microsoft/signalr` client for live alerts | Server-rendered Razor pages |
 
 ---
 
 ## Protocol Specification
 
-### MQTT Topic
+### MQTT topic
 
 ```
 game/devices/{deviceId}/slot/{slotId}
@@ -200,237 +199,186 @@ game/devices/{deviceId}/slot/{slotId}
 
 | Segment | Example | Description |
 |---|---|---|
-| `deviceId` | `esp32-bedroom` | Unique identifier per physical ESP32 device |
-| `slotId` | `btn1`, `knob1` | Physical input slot identifier on that device |
+| `deviceId` | `esp32-01` | Unique per board — equal to its certificate CN |
+| `slotId` | `joystick-x`, `btn-1`, `dht11` | Physical input slot on that board |
 
-The topic carries **physical identity only**. `slotId` is a hardware label, not a game
-concept. Semantic meaning (`inputName`) and player assignment (`playerId`) are resolved
-server-side from the device registry and never appear in the topic or firmware payload.
+The topic carries **physical identity only**. Which player a slot belongs to and what it does
+are resolved by the relay from its registry. The relay subscribes to `game/devices/+/slot/+`.
 
-Server wildcard subscription: `game/devices/+/slot/+`
-
-### MQTT Payload
+### MQTT payload
 
 ```json
 {
-  "deviceId": "esp32-bedroom",
-  "slotId": "btn1",
-  "inputType": "button",
-  "event": "pressed",
-  "value": 1.0,
-  "timestamp": 1234567890,
+  "deviceId": "esp32-01",
+  "slotId": "dht11",
+  "inputType": "dht11",
+  "event": "change",
+  "value": 27.0,
+  "auxiliary": { "humidity": 61.0 },
+  "timestamp": 1777777777,
   "sequenceNumber": 4821
 }
 ```
 
-| Field | Type | Values | Description |
-|---|---|---|---|
-| `deviceId` | string | | Matches the topic segment |
-| `slotId` | string | | Physical slot identifier — matches topic segment |
-| `inputType` | string | `"button"`, `"knob"`, `"sensor"` | Hardware type of the slot |
-| `event` | string | `"pressed"`, `"released"`, `"change"` | What happened |
-| `value` | float | `0.0–1.0` | `1.0`/`0.0` for buttons; normalized range for analog inputs |
-| `timestamp` | int64 | | Seconds since epoch (or since boot if NTP unavailable) |
-| `sequenceNumber` | int64 | | Monotonic per-device counter; resets only on device reboot |
+| Field | Type | Description |
+|---|---|---|
+| `inputType` | string | `button`, `knob`, `dht11`, `ultrasonic` |
+| `event` | string | `pressed` / `released` for buttons, `change` for everything else |
+| `value` | float | Buttons `1.0`/`0.0`; knobs normalized `0.0–1.0`; DHT11 °C; ultrasonic cm |
+| `auxiliary` | object | Optional extra readings from multi-value sensors (DHT11 humidity) |
+| `timestamp` | int64 | Seconds since epoch (NTP-synced on WiFi connect) |
+| `sequenceNumber` | int64 | Per-device counter; resets on reboot |
 
-### Device Registry (server-side config)
+### Device registry (relay config)
 
-The registry is the **only place** in the entire system where physical hardware
-identity and game semantic meaning are linked together:
+The registry is the **only place** where hardware identity and game meaning meet. Each slot
+has a role:
+
+| `inputRole` | Becomes | Example |
+|---|---|---|
+| `player` | Input for one player: `move-x`, `move-y`, `move-y-up`, `move-y-down`, `fire` | thumbstick, knob, buttons |
+| `stage` | Round control: `admin-start`, `admin-end` | operator buttons on ESP32 #1 |
+| `environment` | Environment signal via `envKey` / `auxiliaryKeys` | humidity → `spawn_rate`, distance → `ultrasonic_zone` |
 
 ```json
-{
-  "DeviceRegistry": {
-    "devices": {
-      "esp32-bedroom": {
-        "defaultPlayerId": "player-1",
-        "inputs": {
-          "btn1":  { "type": "button", "inputName": "jump" },
-          "knob1": { "type": "knob",   "inputName": "speed", "minRaw": 0, "maxRaw": 4095 }
-        }
-      },
-      "esp32-shared": {
-        "defaultPlayerId": null,
-        "inputs": {
-          "btn1": { "type": "button", "inputName": "jump", "playerId": "player-2" },
-          "btn2": { "type": "button", "inputName": "jump", "playerId": "player-3" }
-        }
-      }
-    }
+"esp32-02": {
+  "defaultPlayerId": "player-2",
+  "inputs": {
+    "knob":  { "type": "knob",   "inputName": "move-x",      "inputRole": "player" },
+    "btn-1": { "type": "button", "inputName": "move-y-up",   "inputRole": "player" },
+    "btn-2": { "type": "button", "inputName": "move-y-down", "inputRole": "player" },
+    "btn-3": { "type": "button", "inputName": "fire",        "inputRole": "player" }
   }
 }
 ```
 
-`btn1` on `esp32-shared` and `btn1` on `esp32-bedroom` are completely independent —
-`slotId` is scoped per device, not globally unique across the system.
+### gRPC contract
 
-### gRPC Contract
-
-The `.proto` file is the machine-verified contract between the relay server (gRPC
-client) and the Unity dedicated server (gRPC server). Both sides generate C# stubs
-from this single file. Any change requires coordinated regeneration on both sides.
+`game_controller_v2.proto` — the relay is the client, Unity the server:
 
 ```proto
-syntax = "proto3";
-
-option csharp_namespace = "GameController.V2";
-
-package game_controller.v2;
-
 service GameControllerService {
-  rpc SendInputEvent (InputEventRequest)  returns (InputEventResponse);
-  rpc SendInputBatch (InputBatchRequest)  returns (InputEventResponse);
+  rpc SendInputEvent       (InputEventRequest)       returns (InputEventResponse);
+  rpc SendInputBatch       (InputBatchRequest)       returns (InputEventResponse);
+  rpc SendEnvironmentEvent (EnvironmentEventRequest) returns (InputEventResponse);
+  rpc SendAdminCommand     (AdminCommandRequest)     returns (AdminCommandResponse);
 }
 
 message InputEventRequest {
-  string player_id        = 1;  // resolved by relay server from registry
-  string device_id        = 2;  // retained for diagnostics only
-  string input_name       = 3;  // semantic label, resolved by relay server
-  string input_type       = 4;
-  string event_type       = 5;
-  float  value            = 6;  // always normalized 0.0–1.0
-  int64  timestamp        = 7;
-  int64  sequence_number  = 8;
+  string player_id       = 1;  // resolved by the relay
+  string device_id       = 2;  // diagnostics only
+  string input_name      = 3;  // semantic action, e.g. "move-x", "fire"
+  string input_type      = 4;
+  string event_type      = 5;
+  float  value           = 6;
+  int64  timestamp       = 7;
+  int64  sequence_number = 8;
 }
 
-message InputBatchRequest {
-  repeated InputEventRequest events = 1;
-}
-
-message InputEventResponse {
-  bool   accepted = 1;
-  string message  = 2;
+message EnvironmentEventRequest {
+  string env_key   = 1;  // "spawn_rate", "ultrasonic_zone", "gravity"
+  float  raw_value = 2;
+  int64  timestamp = 3;
 }
 ```
+
+`SendAdminCommand` carries round control (`start_round`, `end_round`, `reset`,
+`session_start`) with optional numeric parameters.
 
 ---
 
 ## Key Design Decisions
 
-### Physical slot identity is separated from semantic input name
+### Physical slot identity is separated from semantic meaning
 
-The firmware uses `slotId` — a physical hardware label (`btn1`, `knob1`). The game
-uses `inputName` — a semantic label (`"jump"`, `"speed"`). These are linked only in
-the server registry. This means reassigning a button to a different player or renaming
-a game action requires only a registry config change — no firmware reflash, no Unity
-rebuild, no redeployment of either component.
+Firmware only knows `slotId`, a hardware label. The game only knows `inputName` / `envKey`.
+They are linked in the relay registry alone, so reassigning a control or giving a sensor a
+new purpose is a config change. Introduced in Phase 2.1 after two players sharing one board
+both needed a `jump` input — with physical slot ids they are simply `btn1` and `btn2`.
 
-This was introduced in Phase 2.1 to fix a naming collision that arose when two players
-shared one device but both had a `"jump"` input. With semantic names in the firmware,
-naming them both `"jump"` was impossible. With physical slot IDs, they are simply
-`btn1` and `btn2` — the distinction is hardware topology, not game semantics.
+### Library / game split in every layer (Phase 4)
 
-### One device can serve multiple players
+| Layer | Reusable library | Game-specific |
+|---|---|---|
+| Firmware | `iotgame/` — device loop, MQTT/TLS, input classes | `game/` — configs and entry point |
+| Relay | `IoTGame.Core` — pipeline, rate limiting, zones, gRPC relay, extension interfaces | `GameServer` — registry mapping, intrusion detector, dashboard API |
+| Unity | `Assets/IoTGame/` — gRPC host, queue, input / environment / admin dispatchers | `Assets/Scripts/` — ships, enemies, rounds, environment effects |
 
-A single ESP32 can have different slots mapped to different players in the registry.
-The firmware is completely unaware of this arrangement — it just publishes slot events.
-The relay server resolves player ownership per `(deviceId, slotId)` pair. This enables
-shared physical controllers without any special firmware support.
+A new game reuses the three libraries and only writes its own game layer.
 
-### The relay server is the authentication boundary
+### The environment is an input
 
-The Unity dedicated server only accepts gRPC connections from the relay server and is
-not internet-facing. This means Unity receives only pre-validated, fully-resolved
-events and has no authentication logic of its own. The relay server issues and
-validates device credentials, checks session membership, and rejects unknown devices
-before any event reaches the game layer.
+Sensors aren't attached to players; they map to environment signals. Humidity changes the
+enemy spawn interval (3 s → 0.6 s), and distance zones 1–4 set the game speed (0.5×–1.5×).
+The relay applies hysteresis to the distance reading so jitter at a zone boundary doesn't
+flicker the game speed.
 
 ### Configurable input buffering
 
-The relay server supports a `BufferWindowMs` setting. At `0` (default) every event
-is forwarded to Unity immediately with no added latency. At `16ms`, events accumulate
-and flush as a batch once per frame — useful for high-frequency knob or sensor inputs
-where frame-aligned delivery matters more than minimum latency. This tradeoff is
-configurable rather than hardcoded because different games have different requirements.
+`IoTGame:BufferWindowMs = 0` forwards every event immediately; a value like `16` batches
+events per frame for high-frequency analog input. Different games want different trade-offs,
+so it is configuration, not code.
 
 ### Thread safety in Unity is a hard constraint
 
-gRPC service methods in Unity run on Kestrel background threads. Unity's API is
-main-thread only. These two facts cannot be reconciled by careful coding — they require
-a structural solution. The bridge is a `ConcurrentQueue<InputBatchEnvelope>`: gRPC
-handlers only enqueue, Unity's `Update()` loop only dequeues. This constraint is
-documented explicitly in the Unity codebase and must never be violated.
+gRPC handlers run on background threads; Unity's API is main-thread only. The bridge is
+structural: handlers only enqueue into a `ConcurrentQueue`, and `IoTInputManager` drains it
+in `Update()` and dispatches on the main thread.
 
 ---
 
-## Protocol Version History
+## Project Phases
 
-| Version | Status | Summary of Changes |
-|---|---|---|
-| **Phase 1** | ✅ Complete | Single button per device. One player per device. Topic: `game/controllers/{deviceId}/button`. Minimal JSON payload. |
-| **Phase 2** | 🟡 In progress | Multi-input per device (button, knob, sensor). Multi-device per player. Shared devices. Topic: `game/devices/{deviceId}/input/{inputName}`. Added `inputType`, `value`, `sequenceNumber`, input buffering, rate limiting. |
-| **Phase 2.1** | 🟡 In progress | Protocol fix — separated `slotId` (physical) from `inputName` (semantic). Topic: `game/devices/{deviceId}/slot/{slotId}`. `inputName` moved exclusively to server-side registry. No Unity changes required. |
+| Phase | Summary |
+|---|---|
+| **1** | One button per device, one player per device — end-to-end ESP32 → MQTT → relay → gRPC → Unity |
+| **2** | Multi-input devices (buttons, knobs, sensors), multi-device players, shared devices, input buffering and rate limiting |
+| **2.1** | Protocol fix — physical `slotId` separated from semantic `inputName`; topic `game/devices/{deviceId}/slot/{slotId}` |
+| **3** | Space shooter with a stage controller; DHT11 and HC-SR04 environment sensors; `SendEnvironmentEvent` |
+| **3.1–3.3** | Humidity + stage panel, gravity and spawn-rate effects, gRPC keep-alive and reconnection |
+| **4** | Library foundation — reusable library / game split in firmware, relay and Unity; session management; admin API |
+| **5** | Game redesign — two-player co-op shooter, AI enemies that shoot back, admin-only round start, world-space UI |
+| **6** | Security — mutual TLS on every hop, per-device certificates and broker ACLs, intrusion detection with quarantine, admin security dashboard |
+
+Each repository keeps its phase plans in `docs/plans/` and session logs in `docs/logs/`.
 
 ---
 
 ## Getting Started
 
-### Prerequisites
+**[docs/setup.md](docs/setup.md)** walks through the full setup: creating the CA and
+certificates, configuring Mosquitto, flashing the ESP32s, the relay's secrets, building the
+Unity server, and running the dashboard.
 
-- ESP32 microcontroller flashed with MicroPython (latest stable)
-- [HiveMQ Cloud](https://www.hivemq.com/mqtt-cloud-broker/) account (free tier is sufficient)
-- [.NET 8 SDK](https://dotnet.microsoft.com/download)
-- [Unity 6 LTS](https://unity.com/releases/lts) (6000.3.11f1) with NGO 2.9.1
-
-### 1. Firmware
+Prerequisites: ESP32 boards with MicroPython, Mosquitto, the .NET 8 SDK, Unity 6000.3.11f1,
+Python 3 with `mpremote`, OpenSSL (Git Bash on Windows), and Node.js for the dashboard.
 
 ```bash
-pip install mpremote esptool
-
-# Flash MicroPython to ESP32 (if not already done)
-esptool.py --chip esp32 erase_flash
-esptool.py --chip esp32 write_flash -z 0x1000 esp32-firmware.bin
-
-# See ATITFinalProject-firmware for full configuration instructions
-git clone https://github.com/ATITFinalProject/ATITFinalProject-firmware
+git clone https://github.com/SupakornSJB/atit_micropython
+git clone https://github.com/SupakornSJB/ATITInfraNode
+git clone https://github.com/SupakornSJB/ATITProject
 ```
-
-### 2. Relay Server
-
-```bash
-git clone https://github.com/ATITFinalProject/ATITFinalProject-server
-cd ATITFinalProject-server
-
-dotnet user-secrets set "Mqtt:Username" "your-hivemq-user"
-dotnet user-secrets set "Mqtt:Password" "your-hivemq-password"
-
-dotnet run
-```
-
-### 3. Unity Dedicated Server
-
-Open `ATITFinalProject-unity` in Unity 6. Build as a Dedicated Server:
-
-```
-File > Build Settings > Dedicated Server > Build
-```
-
-Run the server build:
-
-```bash
-./ATITProject.x86_64 -batchmode -nographics -grpcPort 9090 -gamePort 7777
-```
-
-### 4. Unity Game Client
-
-Run Play Mode in the Unity Editor, or build a standalone client binary and connect
-to the dedicated server on port `7777`.
 
 ---
 
 ## Project Status
 
-This is an **early proof of concept** built as a university final project.
+| Component | Status |
+|---|---|
+| ESP32 firmware | ✅ Phase 6 complete |
+| Relay server | ✅ Phase 6 complete |
+| Unity dedicated server + client | ✅ Phase 6 complete |
+| Admin dashboard | 🟡 Implemented; not fully tested end to end |
 
-| Component | Phase | Status |
-|---|---|---|
-| ESP32 Firmware | Phase 2.1 | 🟡 In development |
-| ASP.NET Relay Server | Phase 2.1 | 🟡 In development |
-| Unity Dedicated Server + Client | Phase 1 ✅ POC complete, Phase 2 🟡 | In progress |
-| Architecture & Protocol Documentation | All phases | 🟢 Up to date |
+The full pipeline — ESP32 controllers through to the Unity clients — works end to end.
+
+Known limitations are listed in each component's README; the main ones are that the admin
+round-control API accepts only an API key (so the dashboard's round buttons need it unset) and
+that the relay does not yet verify the Unity server's certificate. The Unity server also
+falls back to plain gRPC (with a warning) if its certificate files are missing.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](./LICENSE)
+MIT — see [LICENSE](./LICENSE).
