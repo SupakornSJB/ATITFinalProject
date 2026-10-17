@@ -13,7 +13,7 @@ committed to git** — each repo only contains example/placeholder values.
 
 | Value | Used by | Where it goes | Committed? |
 |---|---|---|---|
-| Root CA (`ca.crt` / `ca.key`) | Everything | `firmware/certs/` No — `ca.key` especially **never** |
+| Root CA (`ca.crt` / `ca.key`) | Everything | `firmware/certs/` | No — `ca.key` especially **never** |
 | Broker cert (CN = broker host) | Mosquitto | Mosquitto `certs/` folder | No |
 | Device certs (`esp32-01`, …) | ESP32 firmware | ESP32 filesystem (flashed) | No |
 | Relay cert (`gameserver`) | Relay server → MQTT and → Unity | `server/GameServer/Certs/` | No |
@@ -79,6 +79,8 @@ bash scripts/gen_device_cert.sh 192.168.1.50
 Each call writes `certs/<name>/device.crt` and `certs/<name>/device.key`.
 Everything under `certs/` is git-ignored, including `ca.crt` — each deployment
 creates its own CA, so a committed one would be useless to anyone else.
+Because `ca.crt` is not in any repo, the copy steps below (2, 3.2, 4.1, 5.1) are the
+only way each component gets it — every component must trust this same CA.
 
 ---
 
